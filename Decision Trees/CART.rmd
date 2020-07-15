@@ -1,0 +1,566 @@
+---
+title: "Decision Trees"
+author: "Andrew Fogarty"
+date: "2/07/2020"
+output: 
+     rmarkdown::html_vignette:
+          toc: TRUE
+          number_sections: TRUE
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r, message = FALSE, warning = FALSE, include = FALSE}
+# load python
+library(reticulate)
+use_condaenv("my_ml", required = TRUE)
+library(knitr)
+```
+
+```{python}
+# load packages
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import time
+
+from sklearn import tree
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.metrics import confusion_matrix, classification_report, accuracy_score
+from sklearn.datasets import load_iris
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+
+import graphviz
+import xgboost as xgb
+from sklearn.metrics import confusion_matrix
+from sklearn.metrics import f1_score
+from hyperopt import hp, fmin, tpe, STATUS_OK, Trials
+from sklearn.datasets import fetch_openml
+
+np.random.seed(0) # set seed
+```
+
+
+# Introduction
+
+  The *Decision Tree* algorithm is part of a family of *classifier* and *regression* algorithms that aim to predict the *class* or *value* of an observation. Decision trees classify data by splitting features at specified thresholds such that, ideally, we can perfectly predict the observation's label. At its core, features are split by using two relatively simplistic algorithms: `entropy` and `information gain`. When deciding how to split a feature, a threshold is selected such that the informational gain is the highest, meaning more information is revealed and thereby our predictions for our dependent variable's label is improved (or perfect). Decision trees are very popular algorithms and have done exceedingly well in competitions. Indeed, academic research from 2014 found decision trees among the most accurate and generalizable across many different data sets in a comparison of 179 different classifiers (Fernández-Delgado et. al, 2014).
+  
+
+# When to Use Decision Trees
+
+  In short, we should use decision trees when we want to present highly interpretative predictions because as we will see, we can produce very simple and useful graphical outputs of our analysis. The timing required to run decision trees, and more extensive random forests, will of course depend on the number of features and the size of the data. In fact, the number of possible decision trees is estimated by the following calculation: $2^{(2^n)}$ so for a model with six features, there are potentially $18446744073709551616$ possible decision trees. This range of possibilities means that we can increase our likelihood of predicting $\hat{Y}$.
+  
+  Decision Trees also basd on a very popular and recurring Kaggle-winning algorithm known as Extreme Gradient Boosting, or `XGBoost`. At the end of this demonstration, a full application of `xgboost` is provided. `xgboost` is so powerful that we should consider using it for nearly every machine learning problem that is not associated with computer vision and image recognition or natural language processing.
+
+# Decision Tree Components
+
+  Decision tree algorithms require that we compute two quantities of interest: `entropy` and `information gain`. `Entropy` is a measure of uncertainty while `information gain` is a measure of the change in entropy. To better understand these algorithms, we replicate and walk through them below with artificial data.
+  
+```{python}
+def entropy(distribution):
+    ''' entropy function calculated by:
+    sum(-probability * np.log2(probability))
+    '''
+    h = 0.0
+    for probability in distribution:
+        if probability > 0.0:
+            h += -probability * np.log2(probability)
+    return h
+```
+  
+  As we can see from our function above, it expects a probability distribution that we can generate below:
+
+```{python}
+uniform = np.array([0.33, 0.33, 0.33])
+non_uniform = np.array([0.15, 0.0, 0.85])
+```
+
+  We can see that entropy is maximized when we are least sure about something; here we have just three equal groups in our uniform distribution.
+
+```{python}
+print(entropy(uniform))
+print(entropy(non_uniform))
+```
+
+  Before we begin to look at information gain, let us first start building our functions and loading our data so that we can approach it methodically. Our decision tree analysis will be based on the simple but instructive `iris` data set provided by `sklearn`.
+
+```{python}
+iris = load_iris()
+X, y = iris.data, iris.target
+
+# Shuffle the data, but make sure that the features and accompanying labels stay in sync.
+np.random.seed(0)
+shuffle = np.random.permutation(np.arange(X.shape[0]))
+X, y = X[shuffle], y[shuffle]
+
+# Split into train and test.
+train_data, train_labels = X[:100], y[:100]
+test_data, test_labels = X[100:], y[100:]
+```
+
+  Next, we need a function to generate the distribution of our labels so we can feed it into our entropy function.
+
+```{python}
+def get_label_distribution(labels):
+    # initialize counters for all labels to zero
+    label_probs = np.bincount(labels)
+    
+    # Normalize to get a distribution
+    label_probs = label_probs / label_probs.sum()
+    return label_probs
+```
+
+We begin by calculating our starting `entropy` by feeding our training labels into the functions.
+
+```{python}
+initial_entropy = entropy(get_label_distribution(train_labels))
+```
+
+  Now that we understand our initial entropy, what we want to do next is find which feature in our data set will maximize our `information gain`, or in other words, give us the most predictive power as the root variable for our tree. For right now, we will show how to calculate `information gain` for a single feature and then we will generalize it to show why we choose some features over others for the roots of our trees. Since we already know that `petal_length` is tied for the most important feature, we will use that variable to demonstrate the calculation and intuition behind `information gain`.
+  
+  A common technique used in building decision trees is to binarize features such that `information gain` is maximized. While decision trees can support continuous data, thereby offering increased precision, we can aim for parsimony through binarization. So, then, how can we split the data such that we can generate the most accurate predictions on our first split? A histogram will help make this clear.
+  
+  
+```{python, eval = FALSE}
+plt.hist(train_data[:, 2])
+```
+  
+  Notice the gap between the histogram's bins between roughly 2 and 2.5. The values below 2 for `petal_length` are those of the Setosa while values above roughly 2.5 are those of the Virginica and Versicolor. Thus, if we want to classify all of the Setosas based on `petal_length`, the histogram tells us that we can do so easily by binarizing our feature `petal_length` with a threshold at any point roughly between these two values. With all of the Setosas classified, we can then move onto correctly classifying the Virginicas and Versicolors through the rest of the features.
+
+![Petal Length](p1.png)
+  
+  So let's binarize `petal_length`, based on the threshold we visually inspected above and then calculate its `information gain`.
+  
+
+```{python}
+# pull out petal length from data
+petal_length = train_data[:, 2] # all rows; third column
+
+def binarize_iris(data, threshold):
+    # Initialize a new feature array with the same shape as the original data.
+    binarized_data = np.zeros(data.shape)
+    # Apply a threshold  to each feature.
+    for feature in range(100):
+        binarized_data[feature] = data[feature] <= threshold
+    return binarized_data
+
+binarized_petal_length = binarize_iris(petal_length, 2.45)
+```
+
+  Next, we want to split our feature and create two tree branches. One branch will contain all of our Setosas while the other branch will contain the Virginicas and Versicolors.
+
+```{python}
+subset0, subset1 = [], []
+for datum, label in zip(binarized_petal_length, train_labels):
+    if datum > 0:
+        subset1.append(label)
+    else:
+        subset0.append(label)
+```
+
+  Then, we want to calculate `information gain`, which we do by: (1) getting the distribution of our binarized and thresholded subset of `petal_length`, (2) we generate weights by dividing the fraction of observations in our thresholded subset over the whole of the training set, (3) we compute the weighted entropy score, and (4) we compare the resulting value with the initial entropy value. We then repeat this process for every other feature i.e., `petal_width`, `sepal_width`, etc. The feature with the highest `information gain` value is then used as root of our tree from which we split.
+
+```{python}
+# compute the entropy of each subset.
+subset0_entropy = entropy(get_label_distribution(subset0))
+subset1_entropy = entropy(get_label_distribution(subset1))
+
+# compute the weight 
+subset0_weight = 1.0 * len(subset0) / len(train_labels)
+subset1_weight = 1.0 * len(subset1) / len(train_labels)
+
+# compute weighted entropy
+final_entropy = (subset0_weight * subset0_entropy) + (subset1_weight * subset1_entropy)
+
+# compute information gain as the difference between the initial and final entropy.
+information_gain = initial_entropy - final_entropy
+
+print(information_gain)
+```
+
+  To see that `petal_length` indeed is tied for the highest `information gain`, we prepare two functions: (1) to generalize information gain, and (2) to find the threshold that delivers the highest information gain.
+  
+  
+```{python}
+def information_gain(data, labels, feature, threshold=0):
+    # Get the initial entropy of the label distribution.
+    initial_entropy = entropy(get_label_distribution(labels))
+
+    # subset0 will contain the labels for which the feature is 0 (short) and
+    # subset1 will contain the labels for which the feature is 1 (long).
+    subset0, subset1 = [], []
+    for datum, label in zip(data, labels):
+        if datum[feature] > threshold: 
+            subset1.append(label)
+        else:
+             subset0.append(label)
+
+    # Compute the entropy of each subset.
+    subset0_entropy = entropy(get_label_distribution(subset0))
+    subset1_entropy = entropy(get_label_distribution(subset1))
+
+    # Compute the final entropy by weighting each subset's entropy according to its size.
+    subset0_weight = 1.0 * len(subset0) / len(labels)
+    subset1_weight = 1.0 * len(subset1) / len(labels)
+    final_entropy = subset0_weight * subset0_entropy + subset1_weight * subset1_entropy
+
+    # Finally, compute information gain as the difference between the initial and final entropy.
+    return initial_entropy - final_entropy
+```
+  
+  
+```{python}
+def try_features_and_thresholds(data, labels):
+    best_thresholds = []
+    for feature in range(data.shape[1]):
+        # Choose a set of thresholds between the min- and max-valued features.
+        thresholds = np.linspace(data[:,feature].min(), data[:,feature].max(), 20)[1:-1]
+
+        # Try each threshold and keep track of the best one for this feature.
+        best_threshold = 0
+        best_ig = 0
+        for threshold in thresholds:
+            ig = information_gain(data, labels, feature, threshold)
+            if ig > best_ig:
+                best_ig = ig
+                best_threshold = threshold
+        best_thresholds.append(best_threshold)
+        # Show the best threshold and information gain for this feature.
+        print('%d %s\t best threshold: %.3f  |  maximal info gain: %.3f ' 
+        %(feature, iris.feature_names[feature], best_threshold, best_ig))
+        
+    return best_thresholds
+    
+optimal_thresholds = try_features_and_thresholds(train_data, train_labels)
+```
+  
+  The results above tell us the relative `information gain` provided by the identified threshold. It tells us that we should select `petal_length` or `petal_width` as they are tied for the highest `information gain` and thus one of the two should be the root of our decision tree and what we split on first. 
+  
+  Decision trees then follow this process iteratively until each observation is classified or split as far as it can meaningfully go. To select the next branch, we then take what we have left to classify, which in our case are the Virginicas and Versicolors, and then we determine which feature will yield us the most successful classifications as determined by `information gain`.
+  
+  The code below shows how this process unfolds through `sklearn`:
+
+```{python}
+# only split if we get 10 observations classified in a split
+dt = DecisionTreeClassifier(criterion = 'entropy', min_samples_split = 10)
+
+# fit the data
+dt.fit(train_data, train_labels)
+
+# print the accuracy
+print('Accuracy:', dt.score(test_data, test_labels))
+
+# print feature importances
+print(dt.feature_importances_)
+```
+  
+  We can see that the Decision Tree does remarkably well classifying the Iris data set by only using two of its features; `petal_width` and `petal_length`. This makes intuitive sense because they are both the features that we found with the highest `information gain` because we could quickly and easily separate large numbers of the iris' through thresholds. `dt.feature_importances_`, a `sklearn` function tells us just how important each feature was. In this case, we can see that the algorithm found `petal_length` the most important in its classifying task.
+  
+```{python, eval = FALSE}
+# produce graphical output
+dot_data = tree.export_graphviz(dt, out_file=None,
+                              feature_names=iris.feature_names,
+                              class_names=iris.target_names,
+                              filled=True, rounded=True)
+graph = pydotplus.graph_from_dot_data(dot_data)
+display(Image(data=graph.create_png()))
+```
+
+
+![Decision Tree](p2.png)
+
+
+# Decision Tree Engineering
+
+  There are a couple feature engineering strategies that we can take when building decision trees to improve our ability to generalize across new test data. The first is thresholding, which is a strategy that we have undertaken extensively here in this guide. The point here is that if we can collapse multiple categories into one or a few, we can build a more parsimonious model that will generalize better. For instance, instead having a feature for whether or not vehicles have 2, 4, 6, or 8 cylinders, we might collapse these categories into two: greater than 6 and less than 6 as the specificity between cylinders may not be all that helpful. In other words, we might aim to binarize or trinarize our data for parsimony.
+  
+  The second strategy is pruning. When pruning, we build a completely built out tree and then proceed to delete branch splits where the function `pchance` is greater than the a threshold `maxpchance`. `pchance`, derived from chi-square tests, checks whether or not the data's distribution occurred by chance and is calculated at each branch. `maxpchance` is a regularization and hyperparameter that is often estimated with development data. `maxpchance` is a threshold that we, the machine learning engineer, sets. In general, as `maxpchance` increases, our test data accuracy increases, but at some point, it will start to decrease and that is when we stop increasing `maxpchance`. This practice again helps us prevent over fitting and allows us generalize better on our test data. In terms of `xgboost`, we use the hyperparameters `gamma` and `max_depth`.
+  
+  
+# Boosting
+
+  Boosting is a term which describes a sequential training of models that emphasize misclassified observations. It is a technique that is executed in the following steps:
+  
+  1. Weight each observation as 1/n
+  2. Train the classifier using the weights
+  3. Reduce weights for correct examples; increase weights for misclassified examples
+  4. Go back to step 2
+  5. Stop after i iterations or generally when accuracy stops improving
+
+# Gradient Boosting
+
+Gradient Boosting sequentially fits a new tree to the residual errors made by previous tree. Over time, an ensemble of trees is created which can then collectively make predictions.
+
+
+## Extreme Gradient Boosting (xgboost)
+
+In this section, we perform a detailed application of `xgboost` using the the `xgboost` API instead of the `sklearn` API. We also document the use of `hyperopt` for hyperparameter optimization.
+
+In the chunk below, we load and preprocess our MNIST data.
+
+```{python}
+# load MNIST from https://www.openml.org/d/554 via fetch_openml
+X, y = fetch_openml(name='mnist_784', return_X_y=True, cache=False)
+
+# shuffle the data
+shuffle = np.random.permutation(np.arange(X.shape[0]))  # generate random indices
+X, y = X[shuffle], y[shuffle]  # apply shuffle
+
+# set data types
+X = X.astype('float32')
+y = y.astype('float32')
+
+# split data
+X_train_full, X_test, y_train_full, y_test = train_test_split(X, y, random_state=42)
+X_train, X_dev, y_train, y_dev = train_test_split(X_train_full, y_train_full, random_state=42)
+
+# standardize
+scaler = StandardScaler()
+X_train_full = scaler.fit_transform(X_train_full)
+X_train = scaler.transform(X_train)
+X_dev = scaler.transform(X_dev)
+X_test = scaler.transform(X_test)
+```
+
+
+Since we are interested in a classification task, the code below allows us to calculate the weights for our classes in case we want to better balance the observations that we do have.
+
+```{python}
+# find appropriate weights for balancing classes
+def find_weights(y_train):
+    bins = np.bincount(y_train.astype('int64'))  # find bins
+    bin_perc = bins/np.sum(bins)  # get percentage distribution
+    min_val = np.amin(bin_perc)  # get min value
+    weighting = min_val/bin_perc  # divide smallest by others
+
+    weight_container = np.empty([0,]) # create storage
+    for i in y_train.astype('float32'): # make y same type so condition can find it
+        tmp_array = np.zeros([1,]) # create temp array
+        for index, value in enumerate(weighting): # enumerate
+            if i == index:
+                tmp_array[0] = value # append value
+        # append to storage
+        weight_container = np.append(weight_container, tmp_array, axis = 0)
+
+    return weight_container
+```
+
+Next, we prepare our data by using `xgboost`'s `DMatrix`.
+
+
+```{python}
+# prepare xgboost data
+xg_train = xgb.DMatrix(X_train, label=y_train, weight=find_weights(y_train))
+xg_test = xgb.DMatrix(X_test, label=y_test, weight=find_weights(y_test))
+xg_dev = xgb.DMatrix(X_dev, label=y_dev, weight=find_weights(y_dev))
+```
+
+We setup some initial hyperparameters for our model like so:
+
+```{python}
+# setup parameters for xgboost
+param = {'objective': 'multi:softprob',  # softmax multiclass
+         'eta': 0.1,  # learning rate
+         'max_depth': 6,  # depth of tree
+         'eval_metric': 'merror',  # multiclass error rate
+         'num_class': 10} # 10 classes to estimate
+```
+
+Next, we specify that our gradient boosting algorithm be based on our `test` set performance, as we are aiming for a final prediction, and create a container for its results.
+
+```{python}
+# validations set to watch performance
+watchlist = [(xg_train,'train'), (xg_test,'eval')]
+
+# validation results
+evals_results = {}
+```
+
+Then we parepare a learning rate scheduler that lowers our learning rate over time.
+
+```{python}
+# decay learning rate
+def learning_rate_decay(boosting_round, num_boost_round):
+    learning_rate_start = param['eta']
+    learning_rate_min = 0.01
+    lr_decay = 0.95
+    lr = learning_rate_start * np.power(lr_decay, boosting_round)
+    return max(learning_rate_min, lr)
+```
+
+Finally, we are prepared to train our model. For the purposes of this demonstration, we set `num_boost_round` to 10 to end the process quickly. In practice, we would set this value very high and rely on our `early_stopping_rounds` to end our training early in the event of no progress.
+
+```{python}
+bst = xgb.train(params=param,
+                dtrain=xg_train,
+                num_boost_round=10,
+                evals=watchlist,
+                evals_result=evals_results,
+                early_stopping_rounds=5,
+                callbacks=[xgb.callback.reset_learning_rate(learning_rate_decay)])
+```
+
+We generate our predictive results as usual:
+
+```{python}
+# get prediction
+predicted_y = bst.predict(xg_test, ntree_limit=bst.best_ntree_limit) # produces probabilities
+
+# transform to hard predictions
+predicted_y = np.argmax(predicted_y, axis=1)
+
+# manual accuracy for fun
+correct_pred = predicted_y == y_test
+
+# compare actual to predicted
+total = len(y_test)
+correct = 0.0
+accuracy = 0.0
+for j in range(len(y_test)):
+    if correct_pred[j]: # if true
+        correct += 1 #  add 1
+accuracy = correct / total # generate accuracy
+print('the accuracy of this classification is', round(accuracy, 4))
+```
+
+```{python}
+# confusion matrix
+confusion_matrix(y_test, predicted_y)
+```
+
+```{python}
+# f1 score
+f1_score(y_test, predicted_y, average='macro')
+```
+
+
+
+## Hyperopt: xgboost
+
+Hyperopt is one of the most popular and advanced hyperparameter search algorithms in use today. In the section below, we document its use:
+
+```{python}
+def objective(param):
+
+    # validations set to watch performance
+    watchlist = [(xg_train,'train'), (xg_dev,'eval')]
+
+    # validation results
+    evals_results = {}
+
+    # boost
+    bst = xgb.train(params=param,
+                    dtrain=xg_train,
+                    num_boost_round=30,
+                    evals=watchlist,
+                    evals_result=evals_results,
+                    early_stopping_rounds=5,
+                    verbose_eval=False)
+
+    # get best run
+    predicted_y = bst.predict(xg_dev, ntree_limit=bst.best_iteration)
+    
+    # transform to hard predictions
+    predicted_y = np.argmax(predicted_y, axis=1)
+
+    current_score = f1_score(y_dev, np.round(predicted_y), average='weighted')
+
+    #use 1-merror; we are minimizing
+    return {'loss': 1-current_score, 'status': STATUS_OK, 'model': bst}
+```
+
+Here we specify the parameters to search and sample over. The hyperparameters below, which aim to control model complexity, are chosen primarily based on comments from Tong He, a `xgboost` code contributor. 
+
+```{python}
+# setup parameters for xgboost
+param = {'objective': 'multi:softprob',  # softmax multiclass
+         'eval_metric': 'merror',
+         'num_class': 10,  # number of outputs
+
+         # control complexity
+         'gamma': hp.uniform('gamma', 0, 2),
+         'max_depth': hp.choice('max_depth', np.arange(1, 16, 1, dtype=int)),
+         'eta': hp.uniform('eta', 0.01, 0.7),
+         'subsample': hp.quniform('subsample', 0.5, 1.0, 0.10),
+         'colsample_bytree': hp.quniform('colsample_bytree', 0.5, 1.0, 0.10),
+         'min_child_weight': hp.choice('min_child_weight', np.arange(0, 4, 1, dtype=int))
+         }
+```
+
+And we execute `hyperopt` like so:
+
+```{python}
+trials = Trials()
+
+best = fmin(fn=objective,
+            space=param,
+            algo=tpe.suggest,
+            max_evals=30,
+            trials=trials)
+
+print("Best XGB parameters are", best)
+```
+
+We can plot the results of our `hyperopt` search by running the following code. The plot will tell us the direction to which our search space ran and its results. The x-axis represents the values searched while the y-axis represents the loss. 
+
+```{python, eval = FALSE}
+parameters = ['max_depth', 'eta', 'subsample', 'colsample_bytree', 'gamma', 'min_child_weight']
+
+f, axes = plt.subplots(nrows=1, ncols=5, figsize=(20,5))
+cmap = plt.cm.jet
+for i, val in enumerate(parameters):
+    xs = np.array([t['misc']['vals'][val] for t in trials.trials]).ravel()
+    ys = [t['result']['loss'] for t in trials.trials]
+    xs, ys = zip(*sorted(zip(xs, ys)))
+    ys = np.array(ys)
+    axes[i].scatter(xs, ys, s=20, linewidth=0.01, alpha=0.5)
+    axes[i].set_title(val)
+```
+
+![Hyperopt Seach Space](hyperopt_res.png)
+
+
+## Cross-Validating xgboost
+
+We can validate our `hyperopt` search by running its suggested parameters over xgboost's cross-validation algorithm.
+
+```{python}
+# setup parameters for xgboost; best results from hyperopt ex-post
+param = {'objective': 'multi:softprob',  # softmax multiclass
+         'eta': 0.639,  # learning rate
+         'max_depth': 14,  # depth of tree
+         'gamma': 0.104,  # regularization
+         'min_child_weight': 3,
+         'subsample': 0.9,
+         'colsample_bytree': 1.0,
+         'eval_metric': 'merror',  # multiclass error rate
+         'num_class': 10}  # 10 classes to estimate
+             
+# prepare xgboost cv data
+xg_X = xgb.DMatrix(X, label=y, weight=find_weights(y))
+
+bst_cv = xgb.cv(params=param,
+             dtrain=xg_X,
+             num_boost_round=10,
+             stratified=True,
+             nfold=3,
+             metrics='merror',
+             early_stopping_rounds=5,
+             as_pandas=True,
+             verbose_eval=False)
+print(bst_cv)
+```
+
+
+
+
+# Sources
+
+* Fernández-Delgado, Manuel, Eva Cernadas, Senén Barro, and Dinani Amorim. "Do we need hundreds of classifiers to solve real world classification problems?." The journal of machine learning research 15, no. 1 (2014): 3133-3181.
+
+
+
+
+
+

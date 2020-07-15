@@ -1,0 +1,362 @@
+---
+title: "Dimensionality Reduction"
+author: "Andrew Fogarty"
+date: "4/10/2020"
+output: 
+     rmarkdown::html_vignette:
+          toc: TRUE
+          number_sections: TRUE
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r, message = FALSE, warning = FALSE}
+# load python
+library(reticulate)
+use_condaenv("my_ml")
+```
+
+```{python}
+# load packages
+import numpy as np
+from sklearn.datasets import fetch_openml
+from sklearn.datasets import load_digits
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns; sns.set()
+import time
+import xgboost as xgb
+from sklearn import metrics
+from sklearn.metrics import confusion_matrix, classification_report, f1_score
+```
+
+
+# Introduction to Dimensionality Reduction
+
+Many times, the type of data that we have and use to answer most types of quantitative research questions is of large $N$ and small $k$. Other types of research questions, such as Genome classification or natural language processing, involve high-dimensional data. In these situations, $k$ can approach $N$ and therefore lead to overfitting situations due to near perfect correlations.
+
+The idea behind dimensionality reduction is simple: take high dimensional feature spaces ($k$) and project them onto lower dimensional subspaces ($m$) (where $m$ < $k$). Dimensionality reduction has several kind of appealing properties like solving the curse of dimensionality and overfitting, but it also allows us to visualize high dimensional data and to compress it. Collapsing high dimensional data that would otherwise be too difficult for us to understand or interpret suddenly becomes much more salient when we collapse it down into two or three dimensions.
+
+The goal behind dimensionality reduction algorithms is to minimize the loss of information. We want to find new dimensions that still accurately represent the variation in the original data. Consider the plot below, which shows some simulated data that we can imagine is `height` (y) and `weight` (x) for women. While we have `height` and `weight`, what we really want is just `size`, thereby transforming two dimensions into one.
+
+```{r, fig.height = 6, fig.width = 8, fig.align = "center"}
+# simulate data
+x <- rnorm(100, 120, 5)  # obs, mean, std
+u <- rnorm(100, 5, 1)
+y <- 1 + 0.5 * x + u
+fit1 <- lm(y ~ x)
+plot(x, y)
+abline(fit1)
+```
+
+Our goal, then, is to find the line with the least loss of information which means that we need to find a line that captures as much variance as possible. The line that captures as much variance of this data is something that looks a little bit like the regression line (but it is not the regression line). 
+
+When you project the original data points onto the line that captures the most variance, the projection will spread out the original data points across this new axis $z$ to the maximum extent possible. 
+
+In this applied demonstration, we will focus on a method called PCA, or principal component analysis, which is the most common form of dimensionality reduction. For statisticians and econometricians, PCA is probably the canonical form of unsupervised learning along with cluster analysis. PCA is often a pre-processing step used by data scientists.
+
+
+# Principal Component Analysis: Overview
+
+The idea behind PCA is to find a lower-dimensional surface onto which you can project your original data in a way that minimizes this projection error. Projection error is the sum of squared distances between the between the observations and the line that maximizes the data's variance. 
+
+The distance is the orthogonal distance between the observation and the line. This is what makes it different from linear regression, where the sum of squared errors is the vertical distance between the point and the line. 
+
+This example shows a three-dimensional space with points that are red and blue and green. Next to it is an image of a two-dimensional hyperplane that we use to take the projections of these points onto two-dimensional space. By looking at the hyperplane, we can see how principal components reveal slightly different structure to the data than originally seen.
+
+![Example](pca_ov.png)
+
+
+# Principal Component Analysis: How It Works
+
+The goal is to find the vectors, or the principal components, and project them onto a lower dimensional subspace. The principal components of the original data set is determined by the first $m$ eigenvector of the covariance matrix of the data. Put differently, the principal components of your high dimensional data set in k dimensions are the first m, where m is less than k, eigenvectors of the covariance matrix of that data set. Eigenvectors and eigenvalues, a special set of vectors that characterize a matrix of data, are a comparable way of summarizing data in a matrix. 
+
+The idea behind principal component analysis is to diagonalize the covariance matrix of the normalized original data. This returns the eigenvectors, which are the directions of the axes of your new projections, and the eigenvalues tell you the amount of variance captured by each of those eigenvectors.
+
+## Step 1:
+
+Compute the covariance matrix of the data.
+
+## Step 2:
+
+Compute the eigenvectors via the singular value decomposition algorithm, returning three matrices: U, $\Sigma$, and V.
+
+* U: An $n$ by $m$ unitary matrix, where $m$ is the dimensionality of the space that we are projecting onto. The columns of U are the eigenvectors, representing the direction of the greatest variation in the data.
+
+* $\Sigma$: An $n$ by $n$ diagonal matrix of singular values where $n$ is the number of observations. The non-zero diagonal elements of $\Sigma$ are the square roots of the non-zero eigenvalues. 
+
+* V: An $n$ by $n$ unitary matrix that contains vectors defining each principal component.
+
+We can derive them manually like so:
+
+```{python, eval = FALSE}
+# load sklearn digits data
+digits = load_digits()
+print(digits.data.shape)
+
+X = digits["data"]
+
+X_centered = X - X.mean(axis=0)  # required if done manually
+U, s, V = np.linalg.svd(X_centered)
+c1 = V.T[:, 0]  # vector for first independent var
+c2 = V.T[:, 1]  # vector for second independent var
+```
+
+
+## Step 3: Project onto hyperplane
+
+Lastly, we can project our first 10 principal components onto a hyperplane like so:
+
+```{python, eval = FALSE}
+projected_X = V.T[:, :10]
+projected_X_reduced = X_centered.dot(projected_X)
+```
+
+
+# PCA in Practice
+
+Before starting we want to normalize our data which typically means that we subtract the mean and divide by the standard deviation (if we use `sklearn`, it will do this for us). Next, we want to determine what our goal is in dimensionality reduction. If we seek to visualize high-dimensional data, then we want to project our data down to two or maybe three dimensions. If we seek to perform some unsupervised learning, there are often natural breaking points in the data that can help you determine what the optimal space is to project onto, which is a little bit different from k means clustering where you can rely on these metrics like intercluster correlation and separation between clusters.
+
+## PCA: Visualization
+
+The utility of reducing high dimensional data onto lower dimensions is demonstrated below by drawing on `sklearn`'s digits data. Notice that the data is comprised of 8x8 pixels which means that they are 64 dimensional.
+
+```{python}
+# load sklearn digits data
+digits = load_digits()
+print(digits.data.shape)
+
+X = digits["data"]
+y = digits["target"]
+X_train, X_test, y_train, y_test = train_test_split(X, y)
+```
+
+Next we can instantiate PCA like so:
+
+```{python}
+pca = PCA(2)  # project from 64 to 2 dimensions
+projected = pca.fit_transform(digits.data)
+print(digits.data.shape)
+print(projected.shape)
+```
+
+And plot our two dimensional projected data:
+
+```{python, eval = FALSE}
+plt.scatter(projected[:, 0], projected[:, 1],
+            c=digits.target, edgecolor='none', alpha=0.5,
+            cmap=plt.cm.get_cmap('Spectral', 10))
+plt.xlabel('component 1')
+plt.ylabel('component 2')
+plt.colorbar();
+```
+
+We have found the optimal stretch and rotation in 64-dimensional space that allows us to see the layout of the digits in two dimensions, and we have done this in an unsupervised manner.
+
+![64 to 2 Dimensions](pca_vis.png)
+
+
+
+## PCA: Retained Variance
+
+
+With PCA, its easier to figure out how many components we want by using the retained variance statistic which is the average squared projection error divided by the total variation in the data. In practice, we select some percentage of the retained variance that we want to capture and run PCA to then choose the number of components that exceed our threshold percentage.
+
+To find retained variance, we compute the following:
+
+```{python, eval = FALSE}
+pca = PCA().fit(digits.data)
+plt.plot(np.cumsum(pca.explained_variance_ratio_))
+plt.xlabel('number of components')
+plt.ylabel('cumulative explained variance');
+```
+
+![Retained Variance](pca_var.png)
+
+This curve quantifies how much of the total, 64-dimensional variance is contained within the first $N$ components. For example, we see that with the digits the first 10 components contain approximately 75% of the variance, while you need around 50 components to describe close to 100% of the variance.
+
+So, if we want to preserve 50% of the total variance, we can run:
+
+```{python, eval = FALSE}
+pca = PCA(n_components=0.5)  # preserve 50% of variance
+X_reduced = pca.fit_transform(X_train)  # fit on training data
+```
+
+Further, if we want to re-transform our data back to its original dimensions, we can, so long as we are comfortable with losing some amount of variation and thus data quality; as evidenced by the pictures below.
+
+```{python, eval = FALSE}
+pca = PCA(n_components=0.5)
+X_reduced = pca.fit_transform(X_train)
+X_recovered = pca.inverse_transform(X_reduced)
+
+print(X_reduced.shape)
+print(X_recovered.shape)
+
+def plot_digits(data):
+    # 4 rows, 10 cols
+    fig, axes = plt.subplots(4, 10, figsize=(10, 4),
+                             subplot_kw={'xticks':[], 'yticks':[]},
+                             gridspec_kw=dict(hspace=0.1, wspace=0.1))
+    for i, ax in enumerate(axes.flat):
+        ax.imshow(data[i].reshape(8, 8),
+                  cmap='binary', interpolation='nearest',
+                  clim=(0, 16))
+```
+
+```{python, eval = FALSE}
+plot_digits(X_train)
+```
+
+![Original](pca_orig.png)
+
+
+```{python, eval = FALSE}
+plot_digits(X_recovered)
+```
+
+![Recovered](pca_recov.png)
+
+
+
+# PCA Classification: MNIST
+
+In this section, we apply PCA to the MNIST data set to provide a short walk through of PCA used in practice. In the chunk below, we begin by loading our data using `sklearn`’s handy package to access MNIST. We then shuffle, split, and scale our data. 
+
+
+```{python}
+# load MNIST from https://www.openml.org/d/554 via fetch_openml
+X, y = fetch_openml(name='mnist_784', return_X_y=True, cache=False)
+
+# shuffle the data
+shuffle = np.random.permutation(np.arange(X.shape[0]))  # generate random indices
+X, y = X[shuffle], y[shuffle]  # apply shuffle
+
+X = X.astype('float32')  # transform float32
+y = y.astype('float32')  # transform float32
+
+# split data
+X_train_full, X_test, y_train_full, y_test = train_test_split(X, y, random_state=42)
+X_train, X_dev, y_train, y_dev = train_test_split(X_train_full, y_train_full, random_state=42)
+
+# standardize
+scaler = StandardScaler()
+X_train_full = scaler.fit_transform(X_train_full)
+X_train = scaler.transform(X_train)
+X_dev = scaler.transform(X_dev)
+X_test = scaler.transform(X_test)
+```
+
+Notice that we have 784 dimensional data, owing to 64x64 pixel images.
+
+```{python}
+print(X.shape)
+```
+
+Our first step is to examine our data by looking at the ratio of components to explained variance. We can see that roughly 150 components provide us with over 90% of our data's variation.
+
+```{python, eval = FALSE}
+# check total variance by component
+pca = PCA().fit(X)
+plt.plot(np.cumsum(pca.explained_variance_ratio_))
+plt.xlabel('number of components')
+plt.ylabel('cumulative explained variance')
+```
+
+![MNIST: Explained Variance:Components](pca_var_mnist.png)
+
+Since we are dealing with high dimensional data, we can take a look at how our data looks like in two dimensions by the following code:
+
+```{python, eval = FALSE}
+# visualize MNIST in two dimensions
+pca = PCA(2)  # project from 784 to 2 dimensions
+projected = pca.fit_transform(X)
+
+plt.scatter(projected[:, 0], projected[:, 1],
+            c=y, edgecolor='none', alpha=0.5,
+            cmap=plt.cm.get_cmap('Spectral', 10))
+plt.xlabel('component 1')
+plt.ylabel('component 2')
+plt.colorbar();
+```
+
+![MNIST: In Two Dimensions](pca_mnist_vis.png)
+
+Next, we preprocess our data for analysis by having PCA retain just the number of dimensions that yield us roughly 90% of the total variation.
+
+
+```{python}
+# transform training data
+pca = PCA(n_components=0.9)  # preserve 90% of variance
+X_train_reduced = pca.fit_transform(X_train)  # fit on training data
+X_dev_reduced = pca.transform(X_dev) # transform dev data
+X_test_reduced = pca.transform(X_test) # transform test data
+```
+
+```{python}
+# create xgboost decision tree
+xgb_tree = xgb.XGBClassifier(objective='multi:softmax', learning_rate=1,
+                             max_depth=2, alpha=1, n_estimators=100,
+                             booster='gbtree')
+```
+
+```{python}
+# fit the model
+start = time.time()
+xgb_tree.fit(X_train_reduced, y_train,
+            eval_set=[(X_dev_reduced, y_dev)],
+            eval_metric='merror',
+             early_stopping_rounds = 7)
+end = time.time()
+print('Elapsed Training Time:', end - start)
+```
+
+```{python}
+predicted_y = xgb_tree.predict(X_test_reduced, ntree_limit=xgb_tree.best_iteration)
+```
+
+```{python}
+print(classification_report(y_test, predicted_y))
+```
+
+```{python}
+print(confusion_matrix(y_test, predicted_y))
+```
+
+## Evaluating Training Time Differences
+
+In this section, we run the model again to show the difference in training time and predictive results has on our choice to use dimensionality reduction.
+
+```{python}
+# fit the model
+start = time.time()
+xgb_tree.fit(X_train, y_train,
+            eval_set=[(X_dev, y_dev)],
+            eval_metric='merror',
+             early_stopping_rounds = 7)
+end = time.time()
+print('Elapsed Training Time:', end - start)
+```
+
+```{python}
+predicted_y = xgb_tree.predict(X_test, ntree_limit=xgb_tree.best_iteration)
+```
+
+```{python}
+print(classification_report(y_test, predicted_y))
+```
+
+```{python}
+print(confusion_matrix(y_test, predicted_y))
+```
+
+# Sources
+
+* Matthias Feurer, Jan N. van Rijn, Arlind Kadra, Pieter Gijsbers, Neeratyoy Mallik, Sahithya Ravi, Andreas Mueller, Joaquin Vanschoren, Frank Hutter. OpenML-Python: an extensible Python API for OpenML. arXiv:1911.02490 [cs.LG], 2019
+
+* LeCun, Yann. “The MNIST database of handwritten digits.” http://yann.lecun.com/exdb/mnist/ (1998).
+
+
+

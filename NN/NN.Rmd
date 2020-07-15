@@ -1,0 +1,852 @@
+---
+title: "Neural Networks"
+author: "Andrew Fogarty"
+date: "4/08/2020"
+output: 
+     rmarkdown::html_vignette:
+          toc: TRUE
+          number_sections: TRUE
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r, message = FALSE, warning = FALSE}
+# load python
+library(reticulate)
+use_condaenv("my_ml")
+```
+
+```{python}
+# load packages
+import numpy as np
+from sklearn.datasets import fetch_openml
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.datasets import fetch_california_housing
+import pandas as pd
+import matplotlib.pyplot as plt
+from functools import partial
+from keras.utils import np_utils
+import time
+
+import tensorflow as tf
+from tensorflow import keras
+
+tf.__version__
+keras.__version__
+```
+
+
+# Introduction
+
+Artificial Neural Networks (ANN) are powerful *classification* and *regression* algorithms that can solve simple and complex linear and non-linear modeling problems. At its core, a perceptron,  based on a threshold logic unit (TLU), comprises the most basic ANN architecture. 
+
+
+# Artificial Neural Network Architectures
+
+One of the most common ANN architectures are Multilayer Perceptrons (MLPs). A multilayer perceptron is comprised of one input layer, one hidden layer, and one output layer. When an ANN contains multiple hidden layers, it becomes a Deep Neural Network (DNN) architecture.
+
+One reason neural networks are so powerful is because: (1) a two layer network (perhaps a very complex one) can approximate any linear or non-linear function, and (2) it uses *backpropagation*, a form of gradient descent, which in two passes through the network (one forward, one backward), the algorithm computes the gradient of the network's error for each parameter in order to reduce it.
+
+
+
+# Backpropagation: How it Works
+
+## Forward Propagation
+
+* First, a mini-batch of $n$ observations is prepared for computation. Each mini-batch pass is called an epoch.
+
+* In each mini-batch, the independent variables, $x_{i}$ which have weights, $w_{i}$ (that are initialized randomly), are sent to the input layer and then passed to the hidden layer. At this stage, a weighted sum is computed of all $x_{i}$ and $w_{i}$. There is no *correct* value for the our weights at the hidden layer as its purpose is to simply get us to the output layer where we compare $Y_{i}$ with $\hat{Y}_{i}$.
+
+* Next, the dot product of the weighted sum is passed through an activation function yielding *predicted* output values of -1 or 1. The algorithm is a discriminative classifier which means that it learns the decision boundary from the data. If the weighted sum is greater than the threshold (b), then the perceptron fires and emits a value of positive one. If the sum of all the weighted inputs is less than the threshold (b), then the perceptron does not fire and emits a value of -1. 
+
+* Given the predicted output $\hat{Y}_{i}$, the algorithm compares its prediction with $Y_{i}$, yielding an overall sum error. This is our main quantity of interest that we get when we feed our independent variables through the neural network using its weights and thresholds.
+
+
+## Back Propagation
+
+* Given our overall sum error, we then propagate that error backwards (i.e., the difference between $Y_{i}$ and $\hat{Y}_{i}$) such that we assign the error to the weights and the thresholds that were causing the error. For hidden units, we want to propagate the error back from the true output nodes back through the hidden layer. The error is computed via the chain rule and gradient descent in terms of $\delta$ (cost) and represent the amount of cost we want to attach to a particular node earlier on in the neural network.  
+
+* Since the algorithm is really trying to discover the optimal value of $w_{i}$ (so as to determine whether or not the perceptron will fire or not), it measures the amount of error by then working backwards until reaching the input layer.
+
+* Back propagation is the exact reverse analog to the forward propagation step. Back propagation is where we make a lot of our learning progress because once we figure out the source of the error, the algorithm can adjust the weights and thresholds accordingly. 
+
+
+# Semblances of Logistic Regression
+
+Perceptrons incorporate the well known logistic function ($g(z) = \frac{1}{1+e^{-z}}$) as its common activation function. However, other options exist such as: (1) hyperbolic tangent, (2) rectified linear unit, (3) exponential linear unit, and (4) scaled exponential linear unit. It is this continuously differentiable function that allows backpropagation and gradient descent.
+
+Unlike logistic regression, perceptrons force the algorithm to output either a 0 or a 1 and not a value *between* 0 and 1 which is the $Pr(y=1)$. The perceptron's non-linear activation function is what allows it to learn complicated decision boundaries that logistic regression could never learn. If our data is not linearly separable, then logistic regression does not work well but **layers** of perceptrons do work well. This is because of the Universal Approximation Theorem which proves that a two layer network can approximate any function, although we still may want more than two layers.
+
+# MLPs for Classification
+
+MLPs are most commonly used for classification tasks ranging from binary to multinomial outputs. For binary classification problems, we only need one output neuron as the logit activation function will yield a probability between 0 and 1. For multinomial problems, we need one output neuron per class along with a softmax activation function (all estimated probabilities are between 0 and 1 and sum to 1) for the output layer. 
+
+
+## Neural Network Hyperparameters
+
+### Number of Hidden Layers
+
+For most problems, we should start with a single or just a few hidden layers, as it should be able to model most functions, given enough neurons. For complex problems, we use deep networks (i.e., more layers) which similarly allow the modeling of complex functions while using fewer neurons and thus fewer parameters. In such a situation, this means that we should add additional layers until we start overfitting our data.
+
+### Number of Neurons per Layer
+
+In general, we order the number of neurons in the hidden layers as a pyramid such that fewer neurons are used at each additional layer. However, analysts will also tend to use the same number of neurons in each hidden layer. Depending on the data set, we should consider starting by making the first hidden layer bigger than the others.
+
+To simplify things, we should opt for models that have more layers and neurons than necessary. This is because we can use methods like early stopping to halt overfitting. We should also opt to increase the number of layers over the number of neurons per layer.
+
+### Learning Rate
+
+The learning rate is an important hyperparameter that we aim to find at the point where the loss starts to increase. This is done by ranging over a number of different learning rates from very low (1e-5) to very high (10) by a constant factor at each iteration. If we set the learning rate too high, training may diverge. If we set it too low, training will eventually converge, but it will take a long time. If we set it slightly too high, it will make progress very quickly but end up never finding the optimum exactly. It is important to remember that given changes in other hyperparameters, the learning rate needs to be altered, too.
+
+There are a number of learning rate schedulers which perform some variation of the learning rate alteration described above. A few are detailed below:
+
+1. `Performance Scheduling: Decay`: This algorithm is a performance scheduler that reduces the learning rate by a specified decay factor. The learning rate reduces quickly initially, but then slows over epochs.
+
+```{python, eval = FALSE}
+optimizer = keras.optimizers.SGD(lr=0.01, decay=1e-4)
+```
+
+2. `Performance Scheduling: Factor`: This algorithm aims to multiply the learning rate by 0.1 whenever the best `validation_loss` does not improve for 3 epochs.
+
+```{python, eval = FALSE}
+lr_scheduler = keras.callbacks.ReduceLROnPlateau(factor = 0.1, patience = 3)
+```
+
+3. `Exponential Scheduling`: This algorithm drops the learning rate by a factor of 10 every $s$ steps. It can be created and set as follows:
+
+```{python, eval = FALSE}
+# create learning rate callback
+def exponential_decay(lr0, s):
+    def exponential_decay_fn(epoch):
+        return lr0 * 0.1 ** (epoch / s)
+    return exponential_decay_fn
+exponential_decay_fn = exponential_decay(lr0 = 0.01, s = 20)
+
+lr_scheduler = keras.callbacks.LearningRateScheduler(exponential_decay_fn)
+```
+
+4. `1Cycle`: 1cycle starts by increasing the initial learning rate linearly halfway through the training data while decreasing linearly throughout the second part of the data. This approach will almost always speed up the training/convergence process and potentially the accuracy as well. The algorithm is incorporated as follows:[^1] 
+
+[^1]: Géron, Aurélien. Hands-On Machine Learning with Scikit-Learn, Keras, and TensorFlow: Concepts, Tools, and Techniques to Build Intelligent Systems. O'Reilly Media, 2019. https://github.com/ageron/handson-ml2/blob/master/11_training_deep_neural_networks.ipynb
+
+
+```{python}
+K = keras.backend
+
+class OneCycleScheduler(keras.callbacks.Callback):
+    def __init__(self, iterations, max_rate, start_rate=None,
+                 last_iterations=None, last_rate=None):
+        self.iterations = iterations
+        self.max_rate = max_rate
+        self.start_rate = start_rate or max_rate / 10
+        self.last_iterations = last_iterations or iterations // 10 + 1
+        self.half_iteration = (iterations - self.last_iterations) // 2
+        self.last_rate = last_rate or self.start_rate / 1000
+        self.iteration = 0
+    def _interpolate(self, iter1, iter2, rate1, rate2):
+        return ((rate2 - rate1) * (self.iteration - iter1)
+                / (iter2 - iter1) + rate1)
+    def on_batch_begin(self, batch, logs):
+        if self.iteration < self.half_iteration:
+            rate = self._interpolate(0, self.half_iteration, self.start_rate, self.max_rate)
+        elif self.iteration < 2 * self.half_iteration:
+            rate = self._interpolate(self.half_iteration, 2 * self.half_iteration,
+                                     self.max_rate, self.start_rate)
+        else:
+            rate = self._interpolate(2 * self.half_iteration, self.iterations,
+                                     self.start_rate, self.last_rate)
+            rate = max(rate, self.last_rate)
+        self.iteration += 1
+        K.set_value(self.model.optimizer.lr, rate)
+```
+
+### Optimizer
+
+There are many different optimizers to choose from when building a neural network. Among the most common are: (1) RMSProp, (2) Adam, and (3) Nesterov Accelerated Gradient. `RMSProp` and `Adam` are adaptive learning algorithms which means that their learning rate hyperparameters ($\eta$) require less tuning. Any of the following, among others, will provide exceptional speed and convergence qualities.
+
+We instantiate each as follows:
+
+```{python}
+optimizer = keras.optimizers.RMSprop(lr = 0.001, rho = 0.9)
+optimizer = keras.optimizers.Nadam(lr = 0.001, beta_1 = 0.9, beta_2 = 0.999)
+optimizer = keras.optimizers.Adam(lr = 0.001, beta_1 = 0.9, beta_2 = 0.999)
+optimizer = keras.optimizers.SGD(lr = 0.001, momentum = 0.9, nesterov = True)
+```
+
+
+### Batch Size
+
+There are two general strategies involved in choosing batch size:
+
+1. Use as large of a batch that can fit into GPU/PC memory so that the algorithm learns from more instances per second. This strategy almost certainly requires a special learning rate warm up technique while the second does not.
+
+2. Use batch sizes no larger than 32.
+
+
+### Regularizer
+
+Neural networks also have familiar regularizers such as $\ell_{1}$ and $\ell_{2}$ where $\ell_{2}$ constrains the network's weights and $\ell_{1}$ creates a sparse model with many weights equal to 0. *Drop out* is among the most popular regularization techniques which means that every neuron has some chance $p$ of being ignored from the current training epoch. $p$ is typically set to values between 10-50%. Like most regularization techniques, we can increase the dropout rate if we observe overfitting on our training set as compared to our validation set.
+
+
+### Activation Functions
+
+There are a number of activation functions that we can pick from when using `Keras` which all aim to solve problems associated with vanishing or exploding gradients. A few are described here:
+
+1. Exponential Linear Unit (ELU) - The ELU activation function reportedly outperformed all ReLU variants in an experiment in terms of training time and test set performance. Its main drawback is that it is slower to compute, owing to the exponential function, however it converges quicker to make up for computation time lost.
+
+We specify the activation function as follows:
+
+```{python, eval = FALSE}
+keras.layers.Dense(50, activation="elu")
+```
+
+
+2. Scaled Exponential Linear Unit (SELU) - The SELU activation function works when exclusively on stacke dense layers and if all hidden layers use the SELU function. Since it forces the network to self-normalize, it solves the vanishing and exploding gradients problem. Consequently, it outperforms many other activation functions. SELU requires: (1) all independent variables to be standardized, (2) all hidden layers must be initialized by setting `kernel_initializer='lecun_normal'`, and (3) the network architecture must be sequential. This means that we do not need to use batch normalization and it also means that we cannot use any $\ell_{1}$ or $\ell_{2}$ regularization, regular dropout, max-norm, skip connections or other non-sequential topologies (i.e., RNN). However, we *can* use AlphaDropout (`keras.layers.AlphaDropout`).
+
+
+We specify the activation function as follows:
+
+```{python, eval = FALSE}
+keras.layers.Dense(50, activation="selu",
+                   kernel_initializer="lecun_normal")
+```
+
+
+# Applied Neural Networks: Classification
+
+In this section, we demonstrate several deep learning structures, starting from basic models to more complicated ones that involve additional regularizing hyperparameters. For demonstrative purposes, we use MNIST (Modified National Institute of Standards and Technology database).
+
+## Basic Deep Neural Network
+
+In the chunk below, we begin by loading our data using `sklearn`’s handy package to access MNIST. We then shuffle, split, and scale our data. 
+
+
+```{python}
+# load MNIST from https://www.openml.org/d/554 via fetch_openml
+X, y = fetch_openml(name='mnist_784', return_X_y=True, cache=False)
+
+# shuffle the data
+shuffle = np.random.permutation(np.arange(X.shape[0]))  # generate random indices
+X, y = X[shuffle], y[shuffle]  # apply shuffle
+
+X = X.astype('float32')  # transform float32
+y = y.astype('float32')  # transform float32
+
+# split data
+X_train_full, X_test, y_train_full, y_test = train_test_split(X, y, random_state=42)
+X_train, X_dev, y_train, y_dev = train_test_split(X_train_full, y_train_full, random_state=42)
+
+# transform to onehot
+nb_classes = 10
+y_train = np_utils.to_categorical(y_train, nb_classes)
+y_test = np_utils.to_categorical(y_test, nb_classes)
+y_dev = np_utils.to_categorical(y_dev, nb_classes)
+
+# standardize
+scaler = StandardScaler()
+X_train_full = scaler.fit_transform(X_train_full)
+X_train = scaler.transform(X_train)
+X_dev = scaler.transform(X_dev)
+X_test = scaler.transform(X_test)
+```
+
+We begin by constructing a neural network with two hidden layers following the sequential API as follows:
+
+```{python}
+# build neural network
+RegularizedDense = partial(keras.layers.Dense,
+                           activation="elu")
+
+model = keras.models.Sequential([
+    RegularizedDense(500, input_shape=[784]),  # 500 neurons
+    RegularizedDense(300),  # 300 neurons
+    keras.layers.Dense(10, activation="softmax")  # 10 neurons
+])
+
+model.summary()
+```
+
+The code above is interpreted as follows:
+
+* First, we create a partial function that creates a hidden layer with the `elu` activation function and to lighten up our code a bit.
+
+* Second, we create our first hidden layer containing 500 neurons and specify its `input_shape`, or the number of independent variables.
+
+* Third, we add a second hidden layer containing 300 neurons. These hidden layers contain their own weight matrix and a vector of thresholds.
+
+* Fourth, we add an output layer with 10 neurons to classify each of our 10 digits.
+
+Next, we can review our model summary which gives us some information about our model's complexity.
+
+```{python}
+model.summary()
+```
+
+Then, we compile our model like so:
+
+```{python}
+# compile the model
+model.compile(loss='categorical_crossentropy',  # softmax, onehot y
+              optimizer=keras.optimizers.Nadam(lr = 0.01, beta_1 = 0.9, beta_2 = 0.999),  # backpropagation
+              metrics=['accuracy'])
+```
+
+Next, we establish some callbacks which seek three objectives:
+
+1. `Early Stopping` - Early stopping interrupts training when it measures no progress on the `dev` set for a number of epochs whereby it will optionally roll back to the best model.
+
+2. `Checkpoints` - Keras will save checkpoints of the model at the end of each epoch. By setting `save_best_only` to `True`, it will only save your model when its performance on the validation set is the best so far.
+
+3. `1cycle` - This is the implementation of the 1cycle algorithm discussed above.
+
+```{python}
+# stop if no dev set progress detected after 5 epochs
+early_stopping_cb = keras.callbacks.EarlyStopping(monitor='val_loss', 
+                                                  patience=5, 
+                                                  restore_best_weights=True)
+# create epoch-end checkpoints
+checkpoint_cb = keras.callbacks.ModelCheckpoint('keras_model_cp.h5',
+                                                save_best_only=True)
+
+# create learning rate callback
+lr_scheduler_plateau = keras.callbacks.ReduceLROnPlateau(factor=0.1,
+                                                         patience=3)
+
+# create 1cycle
+batch_size = 32
+n_epochs = 100
+onecycle = OneCycleScheduler(len(X_train) // batch_size * n_epochs, max_rate=0.001)
+```
+
+Finally, we train our model by calling its `fit` method. Notice that since we have tunable hyperparameters, we use our `dev` data to tune them, and not our `test` data.
+
+```{python}
+# fit the model
+start = time.time()
+history = model.fit(X_train, y_train,
+                    batch_size=32,
+                    verbose=2,
+                    epochs=100,
+                    validation_data=(X_dev, y_dev),
+                    callbacks=[checkpoint_cb, early_stopping_cb, lr_scheduler_plateau])
+end = time.time()
+print('Elapsed Training Time:', end - start)
+```
+
+As always, we check to see if our training set performance differs notably from that of our dev set, for if our training set exceptionally outperformed our dev set, we would conclude that we are overfitting our training data. The plots below show that this is the case as our `training` and `dev` training performance do not much each other as close as we would like.
+
+Notice that this relatively basic deep learning model required nearly 4 minutes of computation time, which is mostly due to our selection of the stochastic gradient descent and its learning rate as our optimizer. 
+
+
+
+```{python, eval = FALSE}
+# plot results
+pd.DataFrame(history.history).plot(figsize=(8, 5))
+plt.grid(True)
+plt.gca().set_ylim(0, 1)
+plt.show()
+```
+
+![Training Results](p1.png)
+
+
+```{python}
+# generate test set predictions
+model.evaluate(X_test, y_test, verbose=2)
+```
+
+
+## A More Complicated Neural Network
+
+Next, we build a slightly more complicated neural network which incorporates some additional hyperparameters: batch normalization and dropout to account for our overfitting problem.
+
+```{python}
+# build neural network
+RegularizedDense = partial(keras.layers.Dense,
+                           kernel_initializer="he_normal",
+                           use_bias=False)  # necessary for batch norm
+
+model = keras.models.Sequential([
+    RegularizedDense(500, input_shape=[784]),
+    keras.layers.BatchNormalization(),
+    keras.layers.Activation('elu'),
+    keras.layers.Dropout(rate=0.3),
+    RegularizedDense(300),
+    keras.layers.BatchNormalization(),
+    keras.layers.Activation('elu'),
+    keras.layers.Dropout(rate=0.2),
+    keras.layers.Dense(10, activation="softmax")
+])
+```
+
+Next, we compile our new model:
+
+```{python}
+# compile the model
+model.compile(loss='categorical_crossentropy',  # softmax, onehot y
+              optimizer=keras.optimizers.Nadam(lr = 0.01, beta_1 = 0.9, beta_2 = 0.999),  # backpropagation
+              metrics=['accuracy'])
+```
+
+Lastly, we fit our model and generate our results:
+
+```{python}
+# fit the model
+start = time.time()
+history = model.fit(X_train, y_train,
+                    batch_size=32,
+                    verbose=2,
+                    epochs=100,
+                    validation_data=(X_dev, y_dev),
+                    callbacks=[checkpoint_cb, early_stopping_cb, lr_scheduler_plateau])
+end = time.time()
+print('Elapsed Training Time:', end - start)
+```
+
+Notice that our slightly more complicated model which incorporates elements of regularization, increased our computation time significantly by roughly 160%. We could reduce this by more carefully selecting a better optimizer and its learning rate. 
+
+Our results and plot below shows that dropout and batch normalization helped us achieve greater parity between our `train` and `dev` sets, but at the expense of time and some reduced accuracy.
+
+
+```{python, eval = FALSE}
+# plot results
+pd.DataFrame(history.history).plot(figsize=(8, 5))
+plt.grid(True)
+plt.gca().set_ylim(0, 1)
+plt.show()
+```
+
+![Training Results](p2.png)
+
+
+```{python}
+# generate test set predictions
+model.evaluate(X_test, y_test, verbose=2)
+```
+
+
+
+## Another Deep Learning Network Example
+
+In this example, we use the `selu` activation function which prevents us from using most regularization techniques but almost certainly dodges exploding gradient problems.
+
+We begin by building our network:
+
+```{python}
+# build neural network
+RegularizedDense = partial(keras.layers.Dense,
+                           kernel_initializer="lecun_normal",  # for selu
+                           activation='selu')  # selu
+
+model = keras.models.Sequential([
+    RegularizedDense(500, input_shape=[784]),
+    keras.layers.AlphaDropout(rate=0.2),
+    RegularizedDense(300),
+    keras.layers.AlphaDropout(rate=0.2),
+    keras.layers.Dense(10, activation="softmax")
+])                      
+```
+
+Next, we compile our model:
+
+```{python}
+# compile the model
+model.compile(loss='categorical_crossentropy',  # softmax, onehot y
+              optimizer=keras.optimizers.Nadam(lr = 0.01, beta_1 = 0.9, beta_2 = 0.999),  # backpropagation
+              metrics=['accuracy'])
+```
+
+
+Then we fit our model:
+
+```{python}
+# fit the model
+start = time.time()
+history = model.fit(X_train, y_train,
+                    batch_size=32,
+                    verbose=2,
+                    epochs=100,
+                    validation_data=(X_dev, y_dev),
+                    callbacks=[checkpoint_cb, early_stopping_cb, lr_scheduler_plateau])
+end = time.time()
+print('Elapsed Training Time:', end - start)
+```
+
+Notice that `selu` gives us quicker computation, slighly improved `test` accuracy, but does not help us get around our overfitting problem.
+
+
+```{python, eval = FALSE}
+# plot results
+pd.DataFrame(history.history).plot(figsize=(8, 5))
+plt.grid(True)
+plt.gca().set_ylim(0, 1)
+plt.show()
+```
+
+![Training Results](p3.png)
+
+```{python}
+# generate test set predictions
+model.evaluate(X_test, y_test, verbose=2)
+```
+
+
+
+
+## Custom Metrics: F1, Precision, Recall
+
+We can also monitor our model's performance by other commonly used metrics such as `F1`, `precision`, and `recall` by establishing the metrics as custom metric functions.
+
+```{python}
+from keras import backend as K
+
+def check_units(y_true, y_pred):
+    if y_pred.shape[1] != 1:
+      y_pred = y_pred[:,1:2]
+      y_true = y_true[:,1:2]
+    return y_true, y_pred
+
+def precision(y_true, y_pred):
+    y_true, y_pred = check_units(y_true, y_pred)
+    true_positives = K.sum(K.round(K.clip(y_true * y_pred, 0, 1)))
+    predicted_positives = K.sum(K.round(K.clip(y_pred, 0, 1)))
+    precision = true_positives / (predicted_positives + K.epsilon())
+    return precision
+
+def recall(y_true, y_pred):
+    y_true, y_pred = check_units(y_true, y_pred)
+    true_positives = K.sum(K.round(K.clip(y_true * y_pred, 0, 1)))
+    possible_positives = K.sum(K.round(K.clip(y_true, 0, 1)))
+    recall = true_positives / (possible_positives + K.epsilon())
+    return recall
+
+def f1(y_true, y_pred):
+    def recall(y_true, y_pred):
+        true_positives = K.sum(K.round(K.clip(y_true * y_pred, 0, 1)))
+        possible_positives = K.sum(K.round(K.clip(y_true, 0, 1)))
+        recall = true_positives / (possible_positives + K.epsilon())
+        return recall
+
+    def precision(y_true, y_pred):
+        true_positives = K.sum(K.round(K.clip(y_true * y_pred, 0, 1)))
+        predicted_positives = K.sum(K.round(K.clip(y_pred, 0, 1)))
+        precision = true_positives / (predicted_positives + K.epsilon())
+        return precision
+    y_true, y_pred = check_units(y_true, y_pred)
+    precision = precision(y_true, y_pred)
+    recall = recall(y_true, y_pred)
+    return 2*((precision*recall)/(precision+recall+K.epsilon()))
+```
+
+
+We begin by building our network:
+
+```{python}
+# build neural network
+RegularizedDense = partial(keras.layers.Dense,
+                           kernel_initializer="lecun_normal",  # for selu
+                           activation='selu')  # selu
+
+model = keras.models.Sequential([
+    RegularizedDense(500, input_shape=[784]),
+    keras.layers.AlphaDropout(rate=0.2),
+    RegularizedDense(300),
+    keras.layers.AlphaDropout(rate=0.2),
+    keras.layers.Dense(10, activation="softmax")
+])                      
+```
+
+Next, we compile our model, adding in our new metrics to monitor:
+
+```{python}
+# compile the model
+model.compile(loss='categorical_crossentropy',  # softmax, onehot y
+              optimizer=keras.optimizers.Nadam(lr = 0.01, beta_1 = 0.9, beta_2 = 0.999),  # backpropagation
+              metrics=['accuracy', precision, recall, f1])
+```
+
+If we want our learning rate to monitor our F1 progress, we can instantiate it like so:
+
+```{python}
+early_stopping_cb = keras.callbacks.EarlyStopping(monitor='val_f1',
+                                                  patience=3,
+                                                  restore_best_weights=True)
+```
+
+
+
+
+
+Then we fit our model:
+
+```{python}
+# fit the model
+start = time.time()
+history = model.fit(X_train, y_train,
+                    batch_size=32,
+                    verbose=2,
+                    epochs=100,
+                    validation_data=(X_dev, y_dev),
+                    callbacks=[checkpoint_cb, early_stopping_cb, lr_scheduler_plateau])
+end = time.time()
+print('Elapsed Training Time:', end - start)
+```
+
+
+
+
+# Hyperopt: Hyperparameter Optimization
+
+As we can see, it is incredibly difficult to tune a neural network owing to the fact that there are so many parameters to choose from. In this section, we detail the use of `hyperas`, a convenience wrapper for `hyperopt`, a popular hyperparameter optimization search.
+
+We incorporate a working example of hyperas below, which must be run from a console:
+
+```{python, eval = FALSE}
+from sklearn.datasets import fetch_openml
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+import numpy as np
+import pandas as pd
+
+import keras
+
+from keras.datasets import mnist
+from keras.layers.core import Dense, Dropout, Activation
+from keras.models import Sequential
+from keras.utils import np_utils
+
+from hyperopt import Trials, STATUS_OK, tpe
+from hyperas import optim
+from hyperas.distributions import choice, uniform
+
+from functools import partial
+
+import pickle
+
+
+def data():
+    # load MNIST from https://www.openml.org/d/554 via fetch_openml
+    X, y = fetch_openml(name='mnist_784', return_X_y=True, cache=False)
+
+    # shuffle the data
+    shuffle = np.random.permutation(np.arange(X.shape[0]))  # generate random indices
+    X, y = X[shuffle], y[shuffle]  # apply shuffle
+
+    X = X.astype('float32')  # transform float32
+    y = y.astype('float32')  # transform float32
+
+    # split data
+    X_train_full, X_test, y_train_full, y_test = train_test_split(X, y, random_state=42)
+    X_train, X_dev, y_train, y_dev = train_test_split(X_train_full, y_train_full, random_state=42)
+
+    # transform to onehot
+    nb_classes = 10
+    y_train = np_utils.to_categorical(y_train, nb_classes)
+    y_test = np_utils.to_categorical(y_test, nb_classes)
+    y_dev = np_utils.to_categorical(y_dev, nb_classes)
+
+    # standardize
+    scaler = StandardScaler()
+    X_train_full = scaler.fit_transform(X_train_full)
+    X_train = scaler.transform(X_train)
+    X_dev = scaler.transform(X_dev)
+    X_test = scaler.transform(X_test)
+
+    return X_train, y_train, X_test, y_test
+
+
+def create_model(X_train, y_train, X_test, y_test):
+    RegularizedDense = partial(keras.layers.Dense,
+                               kernel_initializer="he_normal",
+                               use_bias=False)
+
+    model = Sequential()
+    model.add(RegularizedDense(500, input_shape=[784]))
+    model.add(keras.layers.BatchNormalization())
+    model.add(keras.layers.Activation('elu'))
+    model.add(keras.layers.Dropout({{uniform(0, 0.5)}}))
+    model.add(RegularizedDense({{choice([200, 300, 400])}}))
+    model.add(keras.layers.BatchNormalization())
+    model.add(keras.layers.Activation('elu'))
+    model.add(keras.layers.Dropout({{uniform(0, 0.5)}}))
+    # If we choose 'four', add an additional fourth layer
+    if {{choice(['three', 'four'])}} == 'four':
+        model.add(RegularizedDense({{choice([200, 300, 400])}}))
+        model.add(keras.layers.BatchNormalization())
+        model.add(keras.layers.Activation('elu'))
+        model.add(keras.layers.Dropout({{uniform(0, 0.5)}}))
+
+    model.add(keras.layers.Dense(10, activation='softmax'))
+
+    # stop if no dev set progress detected after 10 epochs
+    early_stopping_cb = keras.callbacks.EarlyStopping(monitor='val_loss',
+                                                      patience=5,
+                                                      restore_best_weights=True)
+
+    # create learning rate callback
+    lr_scheduler_plateau = keras.callbacks.ReduceLROnPlateau(factor=0.1,
+                                                             patience=3)
+    # compile
+    model.compile(loss='categorical_crossentropy',
+                  metrics=['accuracy'],
+                  optimizer={{choice([keras.optimizers.SGD(lr = 0.0001, decay = 1e-4),
+                                    keras.optimizers.Adam(lr = 0.0001, beta_1 = 0.9, beta_2 = 0.999),
+                                    keras.optimizers.RMSprop(lr = 0.0001, rho = 0.9),
+                                    keras.optimizers.Nadam(lr = 0.0001, beta_1 = 0.9, beta_2 = 0.999),
+                                    keras.optimizers.SGD(lr=0.01, decay=1e-4)])}})
+
+    # instantiate trials to save pickle data
+    trials = Trials()
+
+    # fit
+    result = model.fit(X_train, y_train,
+              batch_size={{choice([32, 64, 128])}},
+              epochs=75,
+              verbose=1,
+              validation_data=(X_dev, y_dev),
+              callbacks = [early_stopping_cb, lr_scheduler_plateau])
+
+    # The trials database now contains 50 entries, it can be saved/reloaded with pickle or another method
+    pickle.dump(trials, open("myfile.p", "wb"))
+
+    #get the highest validation accuracy of the training epochs
+    validation_acc = np.amax(result.history['val_accuracy'])
+    print('Best validation acc of epoch:', validation_acc)
+    return {'loss': -validation_acc, 'status': STATUS_OK, 'model': model}
+
+
+if __name__ == '__main__':
+    best_run, best_model = optim.minimize(model=create_model,
+                                          data=data,
+                                          algo=tpe.suggest,
+                                          max_evals=100,
+                                          trials=Trials())
+    X_train, Y_train, X_test, Y_test = data()
+    print("Evalutation of best performing model:")
+    print(best_model.evaluate(X_test, Y_test))
+    print("Best performing model chosen hyper-parameters:")
+    print(best_run)
+```
+
+
+
+
+# Very Deep Neural Networks
+
+Here, we provide the code to create very deep neural networks through loops. Since this code is built for the `selu` activation function, ensure the data has a mean of 0 and a standard deviation of 1 which means that batch normalization is unnecessary.  We also cannot use $\ell_{1}$ or $\ell_{2}$ regularization, regular dropout, max-norm, skip connections or other non-sequential topologies (i.e., RNN).
+
+```{python, eval = FALSE}
+# build neural network
+RegularizedDense = partial(keras.layers.Dense,
+                           kernel_initializer="lecun_normal",  # for selu
+                           activation='selu')  # selu
+
+
+model = keras.models.Sequential()
+model.add(RegularizedDense(300, input_shape = [784]))
+
+for layer in range(45):
+    model.add(RegularizedDense(200))
+model.add(keras.layers.Dense(10, activation="softmax"))
+```
+
+
+
+# MLPs for Regression
+
+We can use neural networks for regression whereby we specify one neuron for each output we seek. So if we are seeking to predict the value of a home, for instance, we need just 1 neuron in our output layer. In general when we seek to predict a continuous value with regression, we do not want to use any activation function so we do not constrain the output value.
+
+In the chunk below, we demonstrate MLP regression on the california housing data set provided by `sklearn`. We begin by loading and preprocessing the data.
+
+```{python}
+# pull data set
+housing = fetch_california_housing()
+
+# prepare x, y
+X, y = housing.data, housing.target
+
+# split data
+X_train_full, X_test, y_train_full, y_test = train_test_split(X, y, random_state=42)
+X_train, X_dev, y_train, y_dev = train_test_split(X_train_full, y_train_full, random_state=42)
+
+# standardize
+scaler = StandardScaler()
+X_train_full = scaler.fit_transform(X_train_full)
+X_train = scaler.transform(X_train)
+X_dev = scaler.transform(X_dev)
+X_test = scaler.transform(X_test)
+```
+
+
+Next, we build our neural network with three hidden layers that have decreasing amounts of neurons at each layer.
+
+```{python}
+# build neural network
+model = keras.models.Sequential([
+    keras.layers.Dense(60, activation="relu", input_shape=X_train.shape[1:]),
+    keras.layers.Dense(30, activation="relu"),
+    keras.layers.Dense(15, activation="relu"),
+    keras.layers.Dense(1)
+])
+```
+
+Then we compile our network. Notice that our loss function has changed and that we are no longer interested in accuracy metrics.
+
+```{python}
+# compile network
+model.compile(loss="mean_squared_error",
+              optimizer=keras.optimizers.SGD(lr=0.005, decay=0.001))
+
+# reset early stopping cb              
+early_stopping_cb = keras.callbacks.EarlyStopping(monitor='val_loss', 
+                                                  patience=5, 
+                                                  restore_best_weights=True)
+```
+
+Finally, we fit our model:
+
+```{python}
+# fit the model
+history = model.fit(X_train, y_train,
+                    batch_size=32,
+                    verbose=2,
+                    epochs=100,
+                    validation_data=(X_dev, y_dev),
+                    callbacks=[checkpoint_cb, early_stopping_cb, lr_scheduler_plateau])
+```
+
+And generate our results:
+
+```{python, eval = FALSE}
+# plot results
+pd.DataFrame(history.history).plot(figsize=(8, 5))
+plt.grid(True)
+plt.gca().set_ylim(0, 1)
+plt.show()
+```
+
+![Training Results](p4.png)
+
+
+```{python}
+# generate test set predictions
+mse_test = model.evaluate(X_test, y_test, verbose=2)
+print('The RMSE is', np.sqrt(mse_test))
+```
+
+
+
+
+
+
+
+# Sources
+
+* Géron, Aurélien. Hands-On Machine Learning with Scikit-Learn, Keras, and TensorFlow: Concepts, Tools, and Techniques to Build Intelligent Systems. O'Reilly Media, 2019.
+
+
+
+
+
+
